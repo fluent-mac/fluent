@@ -1,0 +1,52 @@
+name: build
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+jobs:
+  mac:
+    runs-on: macos-26
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Test
+        run: swift test
+      - name: Signing
+        env:
+          CERT: ${{ secrets.APPLE_CERT_P12 }}
+          CERT_PASSWORD: ${{ secrets.APPLE_CERT_PASSWORD }}
+          NOTARY_P8: ${{ secrets.APPLE_NOTARY_KEY }}
+        run: |
+          [ -z "$CERT" ] && exit 0
+          echo "$CERT" | base64 -d > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import "$RUNNER_TEMP/cert.p12" -k build.keychain -P "$CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+          ID=$(security find-identity -v -p codesigning build.keychain | grep "Developer ID Application" | head -1 | sed 's/.*"\(.*\)"/\1/')
+          echo "SIGN_IDENTITY=$ID" >> "$GITHUB_ENV"
+          if [ -n "$NOTARY_P8" ]; then
+            echo "$NOTARY_P8" | base64 -d > "$RUNNER_TEMP/notary.p8"
+            echo "NOTARY_KEY=$RUNNER_TEMP/notary.p8" >> "$GITHUB_ENV"
+            echo "NOTARY_KEY_ID=${{ secrets.APPLE_NOTARY_KEY_ID }}" >> "$GITHUB_ENV"
+            echo "NOTARY_ISSUER=${{ secrets.APPLE_NOTARY_ISSUER }}" >> "$GITHUB_ENV"
+          fi
+      - name: Bundle
+        run: ./Scripts/bundle.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Fluent
+          path: build/Fluent.dmg
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" build/Fluent.dmg --title "$GITHUB_REF_NAME" --generate-notes

@@ -1,0 +1,5 @@
+.build/
+build/
+Resources/AppIcon.icon/Assets/carets.png
+.DS_Store
+shots/
